@@ -1,0 +1,8 @@
+build-*/
+data/swe_binary/
+swe_profile_cpu/
+swe_profile_cuda/
+swe_output_cpu/
+swe_output_cuda/
+
+module.sh
