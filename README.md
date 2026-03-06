@@ -13,6 +13,9 @@ or CUDA depending on which Kokkos build you link against.
    needed):
 
    ```bash
+   cd ~
+   git clone https://github.com/kokkos/kokkos.git
+   cd kokkos
    # OpenMP-only Kokkos
    cmake -B build-omp -S . \
      -DKokkos_ENABLE_OPENMP=ON \
@@ -48,7 +51,12 @@ Kokkos example:
 > Requires Python 3 with `numpy` and `h5py` available on your PATH.
 
 ```bash
-cd /home/panq/dev/FlexSpmv/kokkos
+git clone https://github.com/jack-pan-ai/kokkos-benchmark.git
+mv example/kokkos-benchmark example/shallow_water_equation 
+bash example/shallow_water_equation/kokkos_swe_data.sh
+```
+Example:
+```
 python3 example/shallow_water_equation/swe_export_to_binary.py \
   ~/.easier/triangular_1000.hdf5 \
   ~/.easier/SW_1000.hdf5 \
@@ -70,9 +78,9 @@ installs).
 ### 3.1 OpenMP-only build
 
 ```bash
-cd /home/panq/dev/FlexSpmv/kokkos/example/shallow_water_equation
+cd example/shallow_water_equation
 cmake -B build-omp -S . \
-  -DKokkos_DIR=/home/panq/dev/FlexSpmv/kokkos/build-omp/cmake_packages/Kokkos \
+  -DKokkos_DIR=~/kokkos/build-omp/cmake_packages/Kokkos \
   -DCMAKE_CXX_COMPILER=$(which g++)
 cmake --build build-omp --target shallow_water_pipeline -j
 ```
@@ -83,10 +91,10 @@ Kokkos build/install (e.g., `build-omp/cmake_packages/Kokkos`).
 ### 3.2 CUDA Volta70 (+ OpenMP) build
 
 ```bash
-cd /home/panq/dev/FlexSpmv/kokkos/example/shallow_water_equation
+(optional) cd example/shallow_water_equation
 cmake -B build-volta70 -S . \
-  -DKokkos_DIR=/home/panq/dev/FlexSpmv/kokkos/build-volta70/cmake_packages/Kokkos \
-  -DCMAKE_CXX_COMPILER=/home/panq/dev/FlexSpmv/kokkos/bin/nvcc_wrapper \
+  -DKokkos_DIR=~/kokkos/build-volta70/cmake_packages/Kokkos \
+  -DCMAKE_CXX_COMPILER=/home/x_panq/kokkos/bin/nvcc_wrapper \
   -DCUDAToolkit_rt_LIBRARY=$CUDA_HOME/lib64/libcudart.so
 cmake --build build-volta70 --target shallow_water_pipeline -j
 ```
@@ -102,9 +110,9 @@ cmake --build build-volta70 --target shallow_water_pipeline -j
 ### 4.1 OpenMP run
 
 ```bash
-cd /home/panq/dev/FlexSpmv/kokkos/example/shallow_water_equation
+(optional)cd /home/x_panq/kokkos/example/shallow_water_equation
 ./build-omp/shallow_water_pipeline \
-  --data /home/panq/dev/FlexSpmv/kokkos/data/swe_binary \
+  --data ~/kokkos/data/swe_binary \
   --steps 1000 --dt 0.005 \
   --output swe_output_cpu --output-interval 10
 ```
@@ -128,6 +136,8 @@ writes `data000.csv`, `data001.csv`, … containing `(x, y, h)` triples.
 ---
 
 ## 5. Profiling runs
+
+`bash example/shallow_water_equation/kokkos_swe.sh`
 
 Add `--profile` to switch from RK4 stepping to the timing loop:
 
