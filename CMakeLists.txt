@@ -24,6 +24,9 @@ endforeach()
 add_executable(shallow_water_pipeline shallow_water.cpp)
 target_link_libraries(shallow_water_pipeline PRIVATE Kokkos::kokkos)
 
+add_executable(shallow_water_pipeline_fused shallow_water_fused.cpp)
+target_link_libraries(shallow_water_pipeline_fused PRIVATE Kokkos::kokkos)
+
 add_executable(shallow_water_spmv shallow_water_spmv.cpp)
 target_link_libraries(shallow_water_spmv PRIVATE Kokkos::kokkos)
 

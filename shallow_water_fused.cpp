@@ -15,7 +15,6 @@
 
 namespace swe {
 
-// [why] memory space?
 using ExecSpace = Kokkos::DefaultExecutionSpace;
 using MemSpace = ExecSpace::memory_space;
 using RangePolicy = Kokkos::RangePolicy<ExecSpace>;
@@ -41,7 +40,8 @@ std::vector<T> read_binary_vector(const fs::path& path) {
   }
 
   std::vector<T> data(count);
-  input.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(sizeof(T) * count));
+  input.read(reinterpret_cast<char*>(data.data()),
+             static_cast<std::streamsize>(sizeof(T) * count));
   if (!input) {
     throw std::runtime_error("Failed to read payload from " + path.string());
   }
@@ -50,8 +50,8 @@ std::vector<T> read_binary_vector(const fs::path& path) {
 }
 
 template <typename ViewType>
-void copy_vector_into_view(const std::vector<typename ViewType::non_const_value_type>& host,
-                           ViewType view) {
+void copy_vector_into_view(
+    const std::vector<typename ViewType::non_const_value_type>& host, ViewType view) {
   if (static_cast<typename ViewType::size_type>(host.size()) != view.extent(0)) {
     throw std::runtime_error("Host/view extent mismatch for " + std::string(view.label()));
   }
@@ -126,17 +126,14 @@ struct StageViews {
   DoubleView vh;
 };
 
-class ShallowWaterEquation {
+class ShallowWaterEquationFused {
  public:
-  explicit ShallowWaterEquation(const DiskArrays& arrays, double dt);
-
+  explicit ShallowWaterEquationFused(const DiskArrays& arrays, double dt);
   void step();
-
+  int cells() const { return nc_; }
   ConstDoubleView h() const { return h_; }
   ConstDoubleView x() const { return x_; }
   ConstDoubleView y() const { return y_; }
-
-  int cells() const { return nc_; }
 
   void compute_delta(const ConstDoubleView& h_in,
                      const ConstDoubleView& uh_in,
@@ -145,24 +142,6 @@ class ShallowWaterEquation {
                      const DoubleView& delta_uh,
                      const DoubleView& delta_vh) const;
 
-  template <typename ViewTypeIn, typename ViewTypeOut>
-  void face_reconstruct(const ViewTypeIn& phi, const ViewTypeOut& phi_face) const {
-    auto alpha = alpha_;
-    auto src = src_;
-    auto dst = dst_;
-
-    auto phi_in = phi;
-    auto phi_out = phi_face;
-
-    Kokkos::parallel_for(
-        "face_reconstruct", RangePolicy(0, ne_), KOKKOS_LAMBDA(const int e) {
-          const auto alpha_e = alpha(e);
-          const auto left = src(e);
-          const auto right = dst(e);
-          phi_out(e) = (1.0 - alpha_e) * phi_in(left) + alpha_e * phi_in(right);
-        });
-  }
-
   void combine_state(const ConstDoubleView& base,
                      const ConstDoubleView& delta,
                      double scale,
@@ -170,11 +149,9 @@ class ShallowWaterEquation {
     auto base_local = base;
     auto delta_local = delta;
     auto out_local = out;
-
-    Kokkos::parallel_for(
-        "combine_state", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
-          out_local(i) = base_local(i) + scale * delta_local(i);
-        });
+    Kokkos::parallel_for("combine_state", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+      out_local(i) = base_local(i) + scale * delta_local(i);
+    });
   }
 
  private:
@@ -204,13 +181,9 @@ class ShallowWaterEquation {
   DoubleView tmp_h_;
   DoubleView tmp_uh_;
   DoubleView tmp_vh_;
-
-  DoubleView edge_h_;
-  DoubleView edge_uh_;
-  DoubleView edge_vh_;
 };
 
-ShallowWaterEquation::ShallowWaterEquation(const DiskArrays& arrays, double dt)
+ShallowWaterEquationFused::ShallowWaterEquationFused(const DiskArrays& arrays, double dt)
     : dt_(dt),
       nc_(static_cast<int>(arrays.h.size())),
       ne_(static_cast<int>(arrays.src.size())),
@@ -231,10 +204,7 @@ ShallowWaterEquation::ShallowWaterEquation(const DiskArrays& arrays, double dt)
       y_("y", nc_),
       tmp_h_("tmp_h", nc_),
       tmp_uh_("tmp_uh", nc_),
-      tmp_vh_("tmp_vh", nc_),
-      edge_h_("edge_h", ne_),
-      edge_uh_("edge_uh", ne_),
-      edge_vh_("edge_vh", ne_) {
+      tmp_vh_("tmp_vh", nc_) {
   if (dt_ <= 0.0) {
     throw std::runtime_error("dt must be positive");
   }
@@ -268,56 +238,55 @@ ShallowWaterEquation::ShallowWaterEquation(const DiskArrays& arrays, double dt)
   }
 }
 
-void ShallowWaterEquation::compute_delta(const ConstDoubleView& h_in,
-                                         const ConstDoubleView& uh_in,
-                                         const ConstDoubleView& vh_in,
-                                         const DoubleView& delta_h,
-                                         const DoubleView& delta_uh,
-                                         const DoubleView& delta_vh) const {
+void ShallowWaterEquationFused::compute_delta(const ConstDoubleView& h_in,
+                                              const ConstDoubleView& uh_in,
+                                              const ConstDoubleView& vh_in,
+                                              const DoubleView& delta_h,
+                                              const DoubleView& delta_uh,
+                                              const DoubleView& delta_vh) const {
   Kokkos::deep_copy(delta_h, 0.0);
   Kokkos::deep_copy(delta_uh, 0.0);
   Kokkos::deep_copy(delta_vh, 0.0);
 
-  face_reconstruct(h_in, edge_h_);
-  face_reconstruct(uh_in, edge_uh_);
-  face_reconstruct(vh_in, edge_vh_);
-
+  auto src = src_;
   auto dst = dst_;
+  auto alpha = alpha_;
   auto sx = sx_;
   auto sy = sy_;
-  auto edge_h = edge_h_;
-  auto edge_uh = edge_uh_;
-  auto edge_vh = edge_vh_;
-  auto delta_h_local = delta_h;
-  auto delta_uh_local = delta_uh;
-  auto delta_vh_local = delta_vh;
 
-  Kokkos::parallel_for(
-      "delta_height_edges", RangePolicy(0, ne_), KOKKOS_LAMBDA(const int e) {
-        const int cell = dst(e);
-        const double contrib = edge_uh(e) * sx(e) + edge_vh(e) * sy(e);
-        Kokkos::atomic_add(&delta_h_local(cell), -contrib);
-      });
+  auto dh = delta_h;
+  auto du = delta_uh;
+  auto dv = delta_vh;
 
-  Kokkos::parallel_for(
-      "delta_momentum_edges", RangePolicy(0, ne_), KOKKOS_LAMBDA(const int e) {
-        const int cell = dst(e);
-        const double h_face = edge_h(e);
-        const double uh_face = edge_uh(e);
-        const double vh_face = edge_vh(e);
-        // Match EASIER and the fused variant: direct division (no epsilon-guard).
-        const double u = uh_face / h_face;
-        const double v = vh_face / h_face;
-        const double h_square = 0.5 * h_face * h_face;
-        const double sx_val = sx(e);
-        const double sy_val = sy(e);
+  // Fused edge pipeline: face reconstruction + velocity + flux + scatter.
+  Kokkos::parallel_for("delta_edges_fused", RangePolicy(0, ne_), KOKKOS_LAMBDA(const int e) {
+    const int left = static_cast<int>(src(e));
+    const int right = static_cast<int>(dst(e));
+    const double a = alpha(e);
 
-        const double contrib_uh = (u * uh_face + h_square) * sx_val + u * vh_face * sy_val;
-        const double contrib_vh = v * uh_face * sx_val + (v * vh_face + h_square) * sy_val;
+    const double h_face = (1.0 - a) * h_in(left) + a * h_in(right);
+    const double uh_face = (1.0 - a) * uh_in(left) + a * uh_in(right);
+    const double vh_face = (1.0 - a) * vh_in(left) + a * vh_in(right);
 
-        Kokkos::atomic_add(&delta_uh_local(cell), -contrib_uh);
-        Kokkos::atomic_add(&delta_vh_local(cell), -contrib_vh);
-      });
+    // NOTE: The EASIER tutorial uses direct division. (No epsilon-guard.)
+    const double u = uh_face / h_face;
+    const double v = vh_face / h_face;
+
+    const double h_square = 0.5 * h_face * h_face;
+    const double sx_val = sx(e);
+    const double sy_val = sy(e);
+
+    const double uh_sx = uh_face * sx_val;
+    const double vh_sy = vh_face * sy_val;
+
+    const double contrib_h = uh_sx + vh_sy;
+    const double contrib_uh = (u * uh_face + h_square) * sx_val + u * vh_sy;
+    const double contrib_vh = v * uh_sx + (v * vh_face + h_square) * sy_val;
+
+    Kokkos::atomic_add(&dh(right), -contrib_h);
+    Kokkos::atomic_add(&du(right), -contrib_uh);
+    Kokkos::atomic_add(&dv(right), -contrib_vh);
+  });
 
   if (nbc_ > 0) {
     auto bcells = bcells_;
@@ -325,28 +294,25 @@ void ShallowWaterEquation::compute_delta(const ConstDoubleView& h_in,
     auto bsy = bsy_;
     auto h_cells = h_in;
 
-    Kokkos::parallel_for(
-        "delta_boundary", RangePolicy(0, nbc_), KOKKOS_LAMBDA(const int i) {
-          const int cell = bcells(i);
-          const double h_cell = h_cells(cell);
-          const double h_square = 0.5 * h_cell * h_cell;
-          Kokkos::atomic_add(&delta_uh_local(cell), -h_square * bsx(i));
-          Kokkos::atomic_add(&delta_vh_local(cell), -h_square * bsy(i));
-        });
+    Kokkos::parallel_for("delta_boundary", RangePolicy(0, nbc_), KOKKOS_LAMBDA(const int i) {
+      const int cell = static_cast<int>(bcells(i));
+      const double h_cell = h_cells(cell);
+      const double h_square = 0.5 * h_cell * h_cell;
+      Kokkos::atomic_add(&du(cell), -h_square * bsx(i));
+      Kokkos::atomic_add(&dv(cell), -h_square * bsy(i));
+    });
   }
 
   auto area = area_;
-
-  Kokkos::parallel_for(
-      "delta_scale", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
-        const double inv_area = 1.0 / area(i);
-        delta_h_local(i) *= inv_area;
-        delta_uh_local(i) *= inv_area;
-        delta_vh_local(i) *= inv_area;
-      });
+  Kokkos::parallel_for("delta_scale", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    const double inv_area = 1.0 / area(i);
+    dh(i) *= inv_area;
+    du(i) *= inv_area;
+    dv(i) *= inv_area;
+  });
 }
 
-void ShallowWaterEquation::step() {
+void ShallowWaterEquationFused::step() {
   compute_delta(h_, uh_, vh_, stages_[0].h, stages_[0].uh, stages_[0].vh);
 
   const double half_dt = 0.5 * dt_;
@@ -377,23 +343,20 @@ void ShallowWaterEquation::step() {
   auto d2_h = stages_[1].h;
   auto d3_h = stages_[2].h;
   auto d4_h = stages_[3].h;
-
   auto d1_uh = stages_[0].uh;
   auto d2_uh = stages_[1].uh;
   auto d3_uh = stages_[2].uh;
   auto d4_uh = stages_[3].uh;
-
   auto d1_vh = stages_[0].vh;
   auto d2_vh = stages_[1].vh;
   auto d3_vh = stages_[2].vh;
   auto d4_vh = stages_[3].vh;
 
-  Kokkos::parallel_for(
-      "rk4_update", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
-        h(i) += factor * (d1_h(i) + d2_h(i) + d3_h(i) + d4_h(i));
-        uh(i) += factor * (d1_uh(i) + d2_uh(i) + d3_uh(i) + d4_uh(i));
-        vh(i) += factor * (d1_vh(i) + d2_vh(i) + d3_vh(i) + d4_vh(i));
-      });
+  Kokkos::parallel_for("rk4_update", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    h(i) += factor * (d1_h(i) + d2_h(i) + d3_h(i) + d4_h(i));
+    uh(i) += factor * (d1_uh(i) + d2_uh(i) + d3_uh(i) + d4_uh(i));
+    vh(i) += factor * (d1_vh(i) + d2_vh(i) + d3_vh(i) + d4_vh(i));
+  });
 }
 
 struct Options {
@@ -503,7 +466,7 @@ void write_snapshot(const fs::path& directory,
   }
 }
 
-void record_profile(ShallowWaterEquation& equation, const Options& opts) {
+void record_profile(ShallowWaterEquationFused& equation, const Options& opts) {
   const std::string exec_name = ExecSpace::name();
 
   for (int i = 0; i < opts.profile_warmup; ++i) {
@@ -525,8 +488,8 @@ void record_profile(ShallowWaterEquation& equation, const Options& opts) {
   std::cout << "Time to run step() " << opts.profile_iterations << " times: " << seconds
             << " seconds, " << ms_per_iter << " ms per iteration.\n";
 
-  fs::path csv_path = opts.write_output ? (opts.output_dir / "timing.csv")
-                                        : fs::path("timing.csv");
+  fs::path csv_path = opts.write_output ? (opts.output_dir / "timing_fused.csv")
+                                        : fs::path("timing_fused.csv");
   if (csv_path.has_parent_path() && !csv_path.parent_path().empty()) {
     fs::create_directories(csv_path.parent_path());
   }
@@ -564,7 +527,7 @@ int main(int argc, char* argv[]) {
 
   try {
     auto arrays = swe::load_disk_arrays(options.data_dir);
-    swe::ShallowWaterEquation equation(arrays, options.dt);
+    swe::ShallowWaterEquationFused equation(arrays, options.dt);
 
     std::cout << "Loaded mesh with " << equation.cells() << " cells.\n";
 

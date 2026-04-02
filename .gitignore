@@ -4,5 +4,10 @@ swe_profile_cpu/
 swe_profile_cuda/
 swe_output_cpu/
 swe_output_cuda/
+swe_profile_cpu_fused/
+swe_profile_cpu_simple/
+swe_profile_cuda_fused/
 
 module.sh
+*.nsys-rep
+trash/
