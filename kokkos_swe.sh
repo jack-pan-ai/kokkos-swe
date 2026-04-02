@@ -11,23 +11,23 @@ N_CPU=(500 1000 1500 2000 2500 3000)
 
 for n in ${N_CPU[@]}
 do
-    cd /home/x_panq/kokkos
+    cd ${HOME}/kokkos
     python3 example/shallow_water_equation/swe_export_to_binary.py \
         ~/.easier/triangular_${n}.hdf5 \
         ~/.easier/SW_${n}.hdf5 \
         --output-dir data/swe_binary
-    cd /home/x_panq/kokkos/example/shallow_water_equation
+    cd ${HOME}/kokkos/example/shallow_water_equation
 
     delta_t=$(echo "scale=8; 0.5/$n" | bc)
     # openmp
     ./build-omp-release/shallow_water_pipeline \
-        --data /home/x_panq/kokkos/data/swe_binary \
+        --data ${HOME}/kokkos/data/swe_binary \
         --profile --dt ${delta_t} --profile-warmup 5 --profile-iters 20 \
         --output swe_profile_cpu_simple
 
     # openmp fused
     ./build-omp-release/shallow_water_pipeline_fused \
-        --data /home/x_panq/kokkos/data/swe_binary \
+        --data ${HOME}/kokkos/data/swe_binary \
         --profile --dt ${delta_t} --profile-warmup 5 --profile-iters 20 \
         --output swe_profile_cpu_fused
 done
@@ -35,22 +35,22 @@ done
 
 for n in ${N_GPU[@]}
 do
-    cd /home/x_panq/kokkos
+    cd ${HOME}/kokkos
     python3 example/shallow_water_equation/swe_export_to_binary.py \
         ~/.easier/triangular_${n}.hdf5 \
         ~/.easier/SW_${n}.hdf5 \
         --output-dir data/swe_binary
-    cd /home/x_panq/kokkos/example/shallow_water_equation
+    cd ${HOME}/kokkos/example/shallow_water_equation
 
     delta_t=$(echo "scale=8; 0.5/$n" | bc)
     # cuda
     ./build-volta70/shallow_water_pipeline \
-        --data /home/x_panq/kokkos/data/swe_binary \
+        --data ${HOME}/kokkos/data/swe_binary \
         --profile --dt ${delta_t} --profile-warmup 50 --profile-iters 100 \
         --output swe_profile_cuda
     
     ./build-volta70/shallow_water_pipeline_fused \
-        --data /home/x_panq/kokkos/data/swe_binary \
+        --data ${HOME}/kokkos/data/swe_binary \
         --profile --dt ${delta_t} --profile-warmup 50 --profile-iters 100 \
         --output swe_profile_cuda_fused
 done
