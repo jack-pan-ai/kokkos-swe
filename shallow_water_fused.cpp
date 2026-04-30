@@ -766,7 +766,6 @@ int main(int argc, char* argv[]) {
     std::cout << "Loaded mesh with " << equation.cells() << " cells.\n";
 
     if (options.profile) {
-      std::this_thread::sleep_for(std::chrono::seconds(5));
       swe::record_profile(equation, options);
     } else {
       std::cout << "Running " << options.steps << " steps (dt=" << options.dt << ").\n";
