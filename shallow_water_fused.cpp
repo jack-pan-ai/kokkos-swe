@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <thread>
 
 namespace swe {
 
@@ -120,12 +121,6 @@ DiskArrays load_disk_arrays(const fs::path& data_dir) {
   return arrays;
 }
 
-struct StageViews {
-  DoubleView h;
-  DoubleView uh;
-  DoubleView vh;
-};
-
 class ShallowWaterEquationFused {
  public:
   explicit ShallowWaterEquationFused(const DiskArrays& arrays, double dt);
@@ -134,25 +129,6 @@ class ShallowWaterEquationFused {
   ConstDoubleView h() const { return h_; }
   ConstDoubleView x() const { return x_; }
   ConstDoubleView y() const { return y_; }
-
-  void compute_delta(const ConstDoubleView& h_in,
-                     const ConstDoubleView& uh_in,
-                     const ConstDoubleView& vh_in,
-                     const DoubleView& delta_h,
-                     const DoubleView& delta_uh,
-                     const DoubleView& delta_vh) const;
-
-  void combine_state(const ConstDoubleView& base,
-                     const ConstDoubleView& delta,
-                     double scale,
-                     const DoubleView& out) const {
-    auto base_local = base;
-    auto delta_local = delta;
-    auto out_local = out;
-    Kokkos::parallel_for("combine_state", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
-      out_local(i) = base_local(i) + scale * delta_local(i);
-    });
-  }
 
  private:
   double dt_;
@@ -177,10 +153,48 @@ class ShallowWaterEquationFused {
   DoubleView x_;
   DoubleView y_;
 
-  std::array<StageViews, 4> stages_;
-  DoubleView tmp_h_;
-  DoubleView tmp_uh_;
-  DoubleView tmp_vh_;
+  // torch.fx / EASIER graph intermediates.
+  DoubleView truediv_2_;
+  DoubleView truediv_3_;
+  DoubleView truediv_4_;
+  DoubleView truediv_7_;
+  DoubleView truediv_8_;
+  DoubleView truediv_9_;
+  DoubleView truediv_12_;
+  DoubleView truediv_13_;
+  DoubleView truediv_14_;
+
+  DoubleView add_10_;
+  DoubleView add_11_;
+  DoubleView add_12_;
+  DoubleView add_23_;
+  DoubleView add_24_;
+  DoubleView add_25_;
+  DoubleView add_36_;
+  DoubleView add_37_;
+  DoubleView add_38_;
+
+  DoubleView scatter_;
+  DoubleView scatter_1_;
+  DoubleView scatter_2_;
+  DoubleView scatter_3_;
+  DoubleView scatter_4_;
+  DoubleView scatter_5_;
+  DoubleView scatter_6_;
+  DoubleView scatter_7_;
+  DoubleView scatter_8_;
+  DoubleView scatter_9_;
+  DoubleView scatter_10_;
+  DoubleView scatter_11_;
+
+  DoubleView scatter_b_;
+  DoubleView scatter_b_1_;
+  DoubleView scatter_b_2_;
+  DoubleView scatter_b_3_;
+  DoubleView scatter_b_4_;
+  DoubleView scatter_b_5_;
+  DoubleView scatter_b_6_;
+  DoubleView scatter_b_7_;
 };
 
 ShallowWaterEquationFused::ShallowWaterEquationFused(const DiskArrays& arrays, double dt)
@@ -201,10 +215,7 @@ ShallowWaterEquationFused::ShallowWaterEquationFused(const DiskArrays& arrays, d
       uh_("uh", nc_),
       vh_("vh", nc_),
       x_("x", nc_),
-      y_("y", nc_),
-      tmp_h_("tmp_h", nc_),
-      tmp_uh_("tmp_uh", nc_),
-      tmp_vh_("tmp_vh", nc_) {
+      y_("y", nc_) {
   if (dt_ <= 0.0) {
     throw std::runtime_error("dt must be positive");
   }
@@ -230,132 +241,355 @@ ShallowWaterEquationFused::ShallowWaterEquationFused(const DiskArrays& arrays, d
   copy_vector_into_view(arrays.x, x_);
   copy_vector_into_view(arrays.y, y_);
 
-  for (int i = 0; i < 4; ++i) {
-    const auto idx = std::to_string(i);
-    stages_[i].h = DoubleView(Kokkos::view_alloc("delta_h_" + idx), nc_);
-    stages_[i].uh = DoubleView(Kokkos::view_alloc("delta_uh_" + idx), nc_);
-    stages_[i].vh = DoubleView(Kokkos::view_alloc("delta_vh_" + idx), nc_);
-  }
-}
+  truediv_2_ = DoubleView("truediv_2", nc_);
+  truediv_3_ = DoubleView("truediv_3", nc_);
+  truediv_4_ = DoubleView("truediv_4", nc_);
+  truediv_7_ = DoubleView("truediv_7", nc_);
+  truediv_8_ = DoubleView("truediv_8", nc_);
+  truediv_9_ = DoubleView("truediv_9", nc_);
+  truediv_12_ = DoubleView("truediv_12", nc_);
+  truediv_13_ = DoubleView("truediv_13", nc_);
+  truediv_14_ = DoubleView("truediv_14", nc_);
 
-void ShallowWaterEquationFused::compute_delta(const ConstDoubleView& h_in,
-                                              const ConstDoubleView& uh_in,
-                                              const ConstDoubleView& vh_in,
-                                              const DoubleView& delta_h,
-                                              const DoubleView& delta_uh,
-                                              const DoubleView& delta_vh) const {
-  Kokkos::deep_copy(delta_h, 0.0);
-  Kokkos::deep_copy(delta_uh, 0.0);
-  Kokkos::deep_copy(delta_vh, 0.0);
+  add_10_ = DoubleView("add_10", nc_);
+  add_11_ = DoubleView("add_11", nc_);
+  add_12_ = DoubleView("add_12", nc_);
+  add_23_ = DoubleView("add_23", nc_);
+  add_24_ = DoubleView("add_24", nc_);
+  add_25_ = DoubleView("add_25", nc_);
+  add_36_ = DoubleView("add_36", nc_);
+  add_37_ = DoubleView("add_37", nc_);
+  add_38_ = DoubleView("add_38", nc_);
 
-  auto src = src_;
-  auto dst = dst_;
-  auto alpha = alpha_;
-  auto sx = sx_;
-  auto sy = sy_;
+  scatter_ = DoubleView("scatter", nc_);
+  scatter_1_ = DoubleView("scatter_1", nc_);
+  scatter_2_ = DoubleView("scatter_2", nc_);
+  scatter_3_ = DoubleView("scatter_3", nc_);
+  scatter_4_ = DoubleView("scatter_4", nc_);
+  scatter_5_ = DoubleView("scatter_5", nc_);
+  scatter_6_ = DoubleView("scatter_6", nc_);
+  scatter_7_ = DoubleView("scatter_7", nc_);
+  scatter_8_ = DoubleView("scatter_8", nc_);
+  scatter_9_ = DoubleView("scatter_9", nc_);
+  scatter_10_ = DoubleView("scatter_10", nc_);
+  scatter_11_ = DoubleView("scatter_11", nc_);
 
-  auto dh = delta_h;
-  auto du = delta_uh;
-  auto dv = delta_vh;
-
-  // Fused edge pipeline: face reconstruction + velocity + flux + scatter.
-  Kokkos::parallel_for("delta_edges_fused", RangePolicy(0, ne_), KOKKOS_LAMBDA(const int e) {
-    const int left = static_cast<int>(src(e));
-    const int right = static_cast<int>(dst(e));
-    const double a = alpha(e);
-
-    const double h_face = (1.0 - a) * h_in(left) + a * h_in(right);
-    const double uh_face = (1.0 - a) * uh_in(left) + a * uh_in(right);
-    const double vh_face = (1.0 - a) * vh_in(left) + a * vh_in(right);
-
-    // NOTE: The EASIER tutorial uses direct division. (No epsilon-guard.)
-    const double u = uh_face / h_face;
-    const double v = vh_face / h_face;
-
-    const double h_square = 0.5 * h_face * h_face;
-    const double sx_val = sx(e);
-    const double sy_val = sy(e);
-
-    const double uh_sx = uh_face * sx_val;
-    const double vh_sy = vh_face * sy_val;
-
-    const double contrib_h = uh_sx + vh_sy;
-    const double contrib_uh = (u * uh_face + h_square) * sx_val + u * vh_sy;
-    const double contrib_vh = v * uh_sx + (v * vh_face + h_square) * sy_val;
-
-    Kokkos::atomic_add(&dh(right), -contrib_h);
-    Kokkos::atomic_add(&du(right), -contrib_uh);
-    Kokkos::atomic_add(&dv(right), -contrib_vh);
-  });
-
-  if (nbc_ > 0) {
-    auto bcells = bcells_;
-    auto bsx = bsx_;
-    auto bsy = bsy_;
-    auto h_cells = h_in;
-
-    Kokkos::parallel_for("delta_boundary", RangePolicy(0, nbc_), KOKKOS_LAMBDA(const int i) {
-      const int cell = static_cast<int>(bcells(i));
-      const double h_cell = h_cells(cell);
-      const double h_square = 0.5 * h_cell * h_cell;
-      Kokkos::atomic_add(&du(cell), -h_square * bsx(i));
-      Kokkos::atomic_add(&dv(cell), -h_square * bsy(i));
-    });
-  }
-
-  auto area = area_;
-  Kokkos::parallel_for("delta_scale", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
-    const double inv_area = 1.0 / area(i);
-    dh(i) *= inv_area;
-    du(i) *= inv_area;
-    dv(i) *= inv_area;
-  });
+  scatter_b_ = DoubleView("scatter_b", nc_);
+  scatter_b_1_ = DoubleView("scatter_b_1", nc_);
+  scatter_b_2_ = DoubleView("scatter_b_2", nc_);
+  scatter_b_3_ = DoubleView("scatter_b_3", nc_);
+  scatter_b_4_ = DoubleView("scatter_b_4", nc_);
+  scatter_b_5_ = DoubleView("scatter_b_5", nc_);
+  scatter_b_6_ = DoubleView("scatter_b_6", nc_);
+  scatter_b_7_ = DoubleView("scatter_b_7", nc_);
 }
 
 void ShallowWaterEquationFused::step() {
-  compute_delta(h_, uh_, vh_, stages_[0].h, stages_[0].uh, stages_[0].vh);
-
   const double half_dt = 0.5 * dt_;
-  combine_state(h_, stages_[0].h, half_dt, tmp_h_);
-  combine_state(uh_, stages_[0].uh, half_dt, tmp_uh_);
-  combine_state(vh_, stages_[0].vh, half_dt, tmp_vh_);
+  const double full_dt = dt_;
+  const double rk_weight = dt_ / 6.0;
 
-  compute_delta(tmp_h_, tmp_uh_, tmp_vh_, stages_[1].h, stages_[1].uh, stages_[1].vh);
+  auto src = src_;
+  auto dst = dst_;
+  auto bcells = bcells_;
+  auto alpha = alpha_;
+  auto area = area_;
+  auto sx = sx_;
+  auto sy = sy_;
+  auto bsx = bsx_;
+  auto bsy = bsy_;
 
-  combine_state(h_, stages_[1].h, half_dt, tmp_h_);
-  combine_state(uh_, stages_[1].uh, half_dt, tmp_uh_);
-  combine_state(vh_, stages_[1].vh, half_dt, tmp_vh_);
-
-  compute_delta(tmp_h_, tmp_uh_, tmp_vh_, stages_[2].h, stages_[2].uh, stages_[2].vh);
-
-  combine_state(h_, stages_[2].h, dt_, tmp_h_);
-  combine_state(uh_, stages_[2].uh, dt_, tmp_uh_);
-  combine_state(vh_, stages_[2].vh, dt_, tmp_vh_);
-
-  compute_delta(tmp_h_, tmp_uh_, tmp_vh_, stages_[3].h, stages_[3].uh, stages_[3].vh);
-
-  const double factor = dt_ / 6.0;
   auto h = h_;
   auto uh = uh_;
   auto vh = vh_;
 
-  auto d1_h = stages_[0].h;
-  auto d2_h = stages_[1].h;
-  auto d3_h = stages_[2].h;
-  auto d4_h = stages_[3].h;
-  auto d1_uh = stages_[0].uh;
-  auto d2_uh = stages_[1].uh;
-  auto d3_uh = stages_[2].uh;
-  auto d4_uh = stages_[3].uh;
-  auto d1_vh = stages_[0].vh;
-  auto d2_vh = stages_[1].vh;
-  auto d3_vh = stages_[2].vh;
-  auto d4_vh = stages_[3].vh;
+  auto truediv_2 = truediv_2_;
+  auto truediv_3 = truediv_3_;
+  auto truediv_4 = truediv_4_;
+  auto truediv_7 = truediv_7_;
+  auto truediv_8 = truediv_8_;
+  auto truediv_9 = truediv_9_;
+  auto truediv_12 = truediv_12_;
+  auto truediv_13 = truediv_13_;
+  auto truediv_14 = truediv_14_;
 
-  Kokkos::parallel_for("rk4_update", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
-    h(i) += factor * (d1_h(i) + d2_h(i) + d3_h(i) + d4_h(i));
-    uh(i) += factor * (d1_uh(i) + d2_uh(i) + d3_uh(i) + d4_uh(i));
-    vh(i) += factor * (d1_vh(i) + d2_vh(i) + d3_vh(i) + d4_vh(i));
+  auto add_10 = add_10_;
+  auto add_11 = add_11_;
+  auto add_12 = add_12_;
+  auto add_23 = add_23_;
+  auto add_24 = add_24_;
+  auto add_25 = add_25_;
+  auto add_36 = add_36_;
+  auto add_37 = add_37_;
+  auto add_38 = add_38_;
+
+  auto scatter = scatter_;
+  auto scatter_1 = scatter_1_;
+  auto scatter_2 = scatter_2_;
+  auto scatter_3 = scatter_3_;
+  auto scatter_4 = scatter_4_;
+  auto scatter_5 = scatter_5_;
+  auto scatter_6 = scatter_6_;
+  auto scatter_7 = scatter_7_;
+  auto scatter_8 = scatter_8_;
+  auto scatter_9 = scatter_9_;
+  auto scatter_10 = scatter_10_;
+  auto scatter_11 = scatter_11_;
+
+  auto scatter_b = scatter_b_;
+  auto scatter_b_1 = scatter_b_1_;
+  auto scatter_b_2 = scatter_b_2_;
+  auto scatter_b_3 = scatter_b_3_;
+  auto scatter_b_4 = scatter_b_4_;
+  auto scatter_b_5 = scatter_b_5_;
+  auto scatter_b_6 = scatter_b_6_;
+  auto scatter_b_7 = scatter_b_7_;
+
+  Kokkos::deep_copy(scatter_b, 0.0);
+  Kokkos::deep_copy(scatter_b_1, 0.0);
+  // torch.fx: easier0_select_reduce30
+  Kokkos::parallel_for("easier0_select_reduce30", RangePolicy(0, nbc_),
+                       KOKKOS_LAMBDA(const int i) {
+                         const int cell = static_cast<int>(bcells(i));
+                         const double h_cell = h(cell);
+                         const double p = 0.5 * h_cell * h_cell;
+                         Kokkos::atomic_add(&scatter_b(cell), p * bsx(i));
+                         Kokkos::atomic_add(&scatter_b_1(cell), p * bsy(i));
+                       });
+
+  Kokkos::deep_copy(scatter, 0.0);
+  Kokkos::deep_copy(scatter_1, 0.0);
+  Kokkos::deep_copy(scatter_2, 0.0);
+  // torch.fx: easier1_select_reduce16
+  Kokkos::parallel_for("easier1_select_reduce16", RangePolicy(0, ne_),
+                       KOKKOS_LAMBDA(const int e) {
+                         const int left = static_cast<int>(src(e));
+                         const int right = static_cast<int>(dst(e));
+                         const double a = alpha(e);
+
+                         const double h_face = (1.0 - a) * h(left) + a * h(right);
+                         const double uh_face = (1.0 - a) * uh(left) + a * uh(right);
+                         const double vh_face = (1.0 - a) * vh(left) + a * vh(right);
+
+                         const double u = uh_face / h_face;
+                         const double v = vh_face / h_face;
+                         const double p = 0.5 * h_face * h_face;
+                         const double sx_val = sx(e);
+                         const double sy_val = sy(e);
+
+                         const double mass_flux = uh_face * sx_val + vh_face * sy_val;
+                         const double x_momentum_flux =
+                             (u * uh_face + p) * sx_val + u * vh_face * sy_val;
+                         const double y_momentum_flux =
+                             v * uh_face * sx_val + (v * vh_face + p) * sy_val;
+
+                         Kokkos::atomic_add(&scatter(right), mass_flux);
+                         Kokkos::atomic_add(&scatter_1(right), x_momentum_flux);
+                         Kokkos::atomic_add(&scatter_2(right), y_momentum_flux);
+                       });
+
+  // torch.fx: easier2_map35
+  Kokkos::parallel_for("easier2_map35", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    truediv_2(i) = -scatter(i) / area(i);
+    add_10(i) = h(i) + half_dt * truediv_2(i);
+  });
+
+  // torch.fx: easier3_map47
+  Kokkos::parallel_for("easier3_map47", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    truediv_3(i) = -(scatter_1(i) + scatter_b(i)) / area(i);
+    add_11(i) = uh(i) + half_dt * truediv_3(i);
+  });
+
+  // torch.fx: easier4_map59
+  Kokkos::parallel_for("easier4_map59", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    truediv_4(i) = -(scatter_2(i) + scatter_b_1(i)) / area(i);
+    add_12(i) = vh(i) + half_dt * truediv_4(i);
+  });
+
+  Kokkos::deep_copy(scatter_b_2, 0.0);
+  Kokkos::deep_copy(scatter_b_3, 0.0);
+  // torch.fx: easier5_select_reduce92
+  Kokkos::parallel_for("easier5_select_reduce92", RangePolicy(0, nbc_),
+                       KOKKOS_LAMBDA(const int i) {
+                         const int cell = static_cast<int>(bcells(i));
+                         const double h_cell = add_10(cell);
+                         const double p = 0.5 * h_cell * h_cell;
+                         Kokkos::atomic_add(&scatter_b_2(cell), p * bsx(i));
+                         Kokkos::atomic_add(&scatter_b_3(cell), p * bsy(i));
+                       });
+
+  Kokkos::deep_copy(scatter_4, 0.0);
+  Kokkos::deep_copy(scatter_3, 0.0);
+  Kokkos::deep_copy(scatter_5, 0.0);
+  // torch.fx: easier6_select_reduce80
+  // Preserve output order exactly: [scatter_4, scatter_3, scatter_5].
+  Kokkos::parallel_for("easier6_select_reduce80", RangePolicy(0, ne_),
+                       KOKKOS_LAMBDA(const int e) {
+                         const int left = static_cast<int>(src(e));
+                         const int right = static_cast<int>(dst(e));
+                         const double a = alpha(e);
+
+                         const double h_face = (1.0 - a) * add_10(left) + a * add_10(right);
+                         const double uh_face = (1.0 - a) * add_11(left) + a * add_11(right);
+                         const double vh_face = (1.0 - a) * add_12(left) + a * add_12(right);
+
+                         const double u = uh_face / h_face;
+                         const double v = vh_face / h_face;
+                         const double p = 0.5 * h_face * h_face;
+                         const double sx_val = sx(e);
+                         const double sy_val = sy(e);
+
+                         const double mass_flux = uh_face * sx_val + vh_face * sy_val;
+                         const double x_momentum_flux =
+                             (u * uh_face + p) * sx_val + u * vh_face * sy_val;
+                         const double y_momentum_flux =
+                             v * uh_face * sx_val + (v * vh_face + p) * sy_val;
+
+                         Kokkos::atomic_add(&scatter_4(right), x_momentum_flux);
+                         Kokkos::atomic_add(&scatter_3(right), mass_flux);
+                         Kokkos::atomic_add(&scatter_5(right), y_momentum_flux);
+                       });
+
+  // torch.fx: easier7_map97
+  Kokkos::parallel_for("easier7_map97", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    truediv_7(i) = -scatter_3(i) / area(i);
+    add_23(i) = h(i) + half_dt * truediv_7(i);
+  });
+
+  // torch.fx: easier8_map118
+  Kokkos::parallel_for("easier8_map118", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    truediv_9(i) = -(scatter_5(i) + scatter_b_3(i)) / area(i);
+    add_25(i) = vh(i) + half_dt * truediv_9(i);
+  });
+
+  // torch.fx: easier9_map107
+  Kokkos::parallel_for("easier9_map107", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    truediv_8(i) = -(scatter_4(i) + scatter_b_2(i)) / area(i);
+    add_24(i) = uh(i) + half_dt * truediv_8(i);
+  });
+
+  Kokkos::deep_copy(scatter_b_4, 0.0);
+  Kokkos::deep_copy(scatter_b_5, 0.0);
+  // torch.fx: easier10_select_reduce151
+  Kokkos::parallel_for("easier10_select_reduce151", RangePolicy(0, nbc_),
+                       KOKKOS_LAMBDA(const int i) {
+                         const int cell = static_cast<int>(bcells(i));
+                         const double h_cell = add_23(cell);
+                         const double p = 0.5 * h_cell * h_cell;
+                         Kokkos::atomic_add(&scatter_b_4(cell), p * bsx(i));
+                         Kokkos::atomic_add(&scatter_b_5(cell), p * bsy(i));
+                       });
+
+  Kokkos::deep_copy(scatter_7, 0.0);
+  Kokkos::deep_copy(scatter_6, 0.0);
+  Kokkos::deep_copy(scatter_8, 0.0);
+  // torch.fx: easier11_select_reduce139
+  // Preserve output order exactly: [scatter_7, scatter_6, scatter_8].
+  Kokkos::parallel_for("easier11_select_reduce139", RangePolicy(0, ne_),
+                       KOKKOS_LAMBDA(const int e) {
+                         const int left = static_cast<int>(src(e));
+                         const int right = static_cast<int>(dst(e));
+                         const double a = alpha(e);
+
+                         const double h_face = (1.0 - a) * add_23(left) + a * add_23(right);
+                         const double uh_face = (1.0 - a) * add_24(left) + a * add_24(right);
+                         const double vh_face = (1.0 - a) * add_25(left) + a * add_25(right);
+
+                         const double u = uh_face / h_face;
+                         const double v = vh_face / h_face;
+                         const double p = 0.5 * h_face * h_face;
+                         const double sx_val = sx(e);
+                         const double sy_val = sy(e);
+
+                         const double mass_flux = uh_face * sx_val + vh_face * sy_val;
+                         const double x_momentum_flux =
+                             (u * uh_face + p) * sx_val + u * vh_face * sy_val;
+                         const double y_momentum_flux =
+                             v * uh_face * sx_val + (v * vh_face + p) * sy_val;
+
+                         Kokkos::atomic_add(&scatter_7(right), x_momentum_flux);
+                         Kokkos::atomic_add(&scatter_6(right), mass_flux);
+                         Kokkos::atomic_add(&scatter_8(right), y_momentum_flux);
+                       });
+
+  // torch.fx: easier12_map177
+  Kokkos::parallel_for("easier12_map177", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    truediv_14(i) = -(scatter_8(i) + scatter_b_5(i)) / area(i);
+    add_38(i) = vh(i) + full_dt * truediv_14(i);
+  });
+
+  // torch.fx: easier13_map166
+  Kokkos::parallel_for("easier13_map166", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    truediv_13(i) = -(scatter_7(i) + scatter_b_4(i)) / area(i);
+    add_37(i) = uh(i) + full_dt * truediv_13(i);
+  });
+
+  // torch.fx: easier14_map156
+  Kokkos::parallel_for("easier14_map156", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    truediv_12(i) = -scatter_6(i) / area(i);
+    add_36(i) = h(i) + full_dt * truediv_12(i);
+  });
+
+  Kokkos::deep_copy(scatter_10, 0.0);
+  Kokkos::deep_copy(scatter_9, 0.0);
+  Kokkos::deep_copy(scatter_11, 0.0);
+  // torch.fx: easier15_select_reduce198
+  // Preserve output order exactly: [scatter_10, scatter_9, scatter_11].
+  Kokkos::parallel_for("easier15_select_reduce198", RangePolicy(0, ne_),
+                       KOKKOS_LAMBDA(const int e) {
+                         const int left = static_cast<int>(src(e));
+                         const int right = static_cast<int>(dst(e));
+                         const double a = alpha(e);
+
+                         const double h_face = (1.0 - a) * add_36(left) + a * add_36(right);
+                         const double uh_face = (1.0 - a) * add_37(left) + a * add_37(right);
+                         const double vh_face = (1.0 - a) * add_38(left) + a * add_38(right);
+
+                         const double u = uh_face / h_face;
+                         const double v = vh_face / h_face;
+                         const double p = 0.5 * h_face * h_face;
+                         const double sx_val = sx(e);
+                         const double sy_val = sy(e);
+
+                         const double mass_flux = uh_face * sx_val + vh_face * sy_val;
+                         const double x_momentum_flux =
+                             (u * uh_face + p) * sx_val + u * vh_face * sy_val;
+                         const double y_momentum_flux =
+                             v * uh_face * sx_val + (v * vh_face + p) * sy_val;
+
+                         Kokkos::atomic_add(&scatter_10(right), x_momentum_flux);
+                         Kokkos::atomic_add(&scatter_9(right), mass_flux);
+                         Kokkos::atomic_add(&scatter_11(right), y_momentum_flux);
+                       });
+
+  Kokkos::deep_copy(scatter_b_6, 0.0);
+  Kokkos::deep_copy(scatter_b_7, 0.0);
+  // torch.fx: easier16_select_reduce210
+  Kokkos::parallel_for("easier16_select_reduce210", RangePolicy(0, nbc_),
+                       KOKKOS_LAMBDA(const int i) {
+                         const int cell = static_cast<int>(bcells(i));
+                         const double h_cell = add_36(cell);
+                         const double p = 0.5 * h_cell * h_cell;
+                         Kokkos::atomic_add(&scatter_b_6(cell), p * bsx(i));
+                         Kokkos::atomic_add(&scatter_b_7(cell), p * bsy(i));
+                       });
+
+  // torch.fx: easier17_map239
+  Kokkos::parallel_for("easier17_map239", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    const double truediv_17 = -scatter_9(i) / area(i);
+    h(i) += rk_weight * (truediv_2(i) + truediv_7(i) + truediv_12(i) + truediv_17);
+  });
+
+  // torch.fx: easier18_map249
+  Kokkos::parallel_for("easier18_map249", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    const double truediv_19 = -(scatter_11(i) + scatter_b_7(i)) / area(i);
+    vh(i) += rk_weight * (truediv_4(i) + truediv_9(i) + truediv_14(i) + truediv_19);
+  });
+
+  // torch.fx: easier19_map244
+  Kokkos::parallel_for("easier19_map244", RangePolicy(0, nc_), KOKKOS_LAMBDA(const int i) {
+    const double truediv_18 = -(scatter_10(i) + scatter_b_6(i)) / area(i);
+    uh(i) += rk_weight * (truediv_3(i) + truediv_8(i) + truediv_13(i) + truediv_18);
   });
 }
 
@@ -532,6 +766,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Loaded mesh with " << equation.cells() << " cells.\n";
 
     if (options.profile) {
+      std::this_thread::sleep_for(std::chrono::seconds(5));
       swe::record_profile(equation, options);
     } else {
       std::cout << "Running " << options.steps << " steps (dt=" << options.dt << ").\n";
@@ -557,4 +792,3 @@ int main(int argc, char* argv[]) {
 
   return 0;
 }
-
